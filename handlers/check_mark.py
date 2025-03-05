@@ -2,8 +2,9 @@ from aiogram import types, Router, F
 from aiogram.filters import CommandStart
 
 from keyboards import main_kb as kb
-from vk_utils import get_last_5_creative_statuses_string
-from config.api_token import API_TOKEN # Импорт API_TOKEN из config
+from config.api_token import API_TOKEN
+
+from vk_utils import ORDHTTPClient
 
 router = Router()
 
@@ -15,10 +16,14 @@ async def command_start_handler(message: types.Message) -> None:
     """
     await message.answer(f"Привет, {message.from_user.full_name}!", reply_markup=kb)
 
-@router.message(F.text == "Получить результаты согласования креативов из ЕРИР")
+@router.message(F.text == "Получить результаты обработки из erir")
 async def erir_results_handler(massage: types.Message) -> None:
-    text = get_last_5_creative_statuses_string(api_token=API_TOKEN)
-    await massage.answer(f"{text}")
+    async with ORDHTTPClient(base_url="https://api.ord.vk.com",
+                             api_token=API_TOKEN) as ord_client:
+        text = await ord_client.get_erid_statuses()
+    await massage.answer(text + "\n\nПриведены те креативы, контрагенты, площадки и договоры, которые находятся в "
+                                "обработке. Если у вас есть креатив и он не появился в этом сообщении, вы можете "
+                                "отправлять его блогеру\nКреатив обозначается своим токеном")
 
 # Все остальные сообщения (можно оставить здесь или переместить в main.py, в зависимости от структуры)
 @router.message()

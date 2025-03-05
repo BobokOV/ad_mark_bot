@@ -172,3 +172,4 @@ cython_debug/
 /config
 *.BAK
 another_bot.py
+/data
