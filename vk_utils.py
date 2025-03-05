@@ -1,150 +1,135 @@
-import json
-import requests
+from aiohttp import ClientSession
+import datetime
 
-def get_erir_statuses_data(api_token=None, data_type='creative', offset=0, limit=10, limit_per_entity=10, external_ids=None):
-    """
-    Выполняет запрос к API для получения статусов ЕРИР и извлекает значение 'erir_status'.
+from config.api_token import API_TOKEN
 
-    Args:
-        api_token (str): Токен авторизации API Bearer.
-        data_type (str, optional): Тип данных для запроса (creative, contract, etc.). Defaults to 'creative'.
-        offset (int, optional): Смещение для пагинации. Defaults to 0.
-        limit (int, optional): Количество результатов на странице. Defaults to 10.
-        limit_per_entity (int, optional): Лимит на сущность. Defaults to 1.
-        external_ids (list, optional): Список external_id для фильтрации. Defaults to None.
 
-    Returns:
-        str or None: Значение 'erir_status' в случае успешного запроса и наличия,
-                     None в случае ошибки, отсутствия данных или если 'erir_status' не найден.
-                     В случае ошибки также выводит сообщение об ошибке в консоль.
-    """
-    url = 'https://api.ord.vk.com/v1/erir_statuses'
-
-    params = {
-        'data_type': data_type,
-        'offset': offset,
-        'limit': limit,
-        'limit_per_entity': limit_per_entity,
-    }
-    if external_ids:
-        params['external_id'] = external_ids
-
-    headers = {
-        'accept': 'application/json',
-        'Authorization': f'Bearer {api_token}'
-    }
-
+def is_date_relevant(date_string: str):
     try:
-        response = requests.get(url, headers=headers, params=params)
-        response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
-        data = response.json() # Декодируем JSON ответ
-        items = data.get("items") # Получаем список items
+        date_object = datetime.datetime.fromisoformat(date_string.replace('Z', '+00:00'))
+        current_datetime = datetime.datetime.now(datetime.timezone.utc)
+        time_difference = current_datetime - date_object
+        three_days = datetime.timedelta(days=10)
+        return time_difference <= three_days
+    except ValueError:
+        print("Ошибка: Неверный формат строки даты.")
+        return False
 
-        if items and isinstance(items, list) and len(items) > 0: # Проверяем, что items не пустой список
-            first_item = items[0] # Берем первый элемент списка items
-            erir_status = first_item.get("erir_status") # Пытаемся получить значение 'erir_status'
-            if erir_status:
-                return erir_status # Возвращаем значение 'erir_status'
-            else:
-                print("Предупреждение: Ключ 'erir_status' не найден в элементе items.")
-                return None # Возвращаем None, если 'erir_status' не найден
-        else:
-            print("Предупреждение: Ключ 'items' не найден, items не является списком или пуст.")
-            return None # Возвращаем None, если структура JSON не соответствует ожидаемой
 
-    except requests.exceptions.HTTPError as http_err:
-        print(f"HTTP error occurred: {http_err}")
-        print(f"Response text: {response.text}")
-        return None
-    except requests.exceptions.RequestException as req_err:
-        print(f"Request error occurred: {req_err}")
-        return None
-    except json.JSONDecodeError as json_err:
-        print(f"JSON decode error occurred: {json_err}")
-        print(f"Response text: {response.text}")
-        return None
+class HTTPClient:
+    def __init__(self, base_url: str, api_token: str):
+        self._base_url = base_url
+        self._headers = {
+            'Authorization': f'Bearer {API_TOKEN}',
+            'accept': 'application/json'
+        }
+        self._session = None  # Инициализируем _session как None в __init__
 
-def get_creative_list_data(api_token, limit=5, offset=0):
-    """
-    Выполняет запрос к API для получения списка креативов (erid и external_id).
+    async def __aenter__(self):  # Асинхронный метод для входа в контекст
+        self._session = ClientSession(  # Создаем сессию при входе в контекст
+            base_url=self._base_url,
+            headers=self._headers
+        )
+        return self
 
-    Args:
-        api_token (str): Токен авторизации API Bearer.
-        limit (int, optional): Количество результатов на странице. Defaults to 5.
-        offset (int, optional): Смещение для пагинации. Defaults to 0.
+    async def __aexit__(self, exc_type, exc_val, exc_tb):  # Асинхронный метод для выхода из контекста
+        if self._session:  # Проверяем, что сессия была создана
+            await self._session.close()  # Закрываем сессию при выходе из контекста
 
-    Returns:
-        list or None: Список словарей с 'erid' и 'external_id' в случае успеха,
-                      None в случае ошибки или отсутствия данных.
-                      В случае ошибки также выводит сообщение об ошибке в консоль.
-    """
-    url = 'https://api.ord.vk.com/v1/creative/list/erid_external_ids'
+    @property
+    def session(self):  # Добавим property для доступа к сессии внутри контекста
+        if not self._session:
+            raise RuntimeError("Client session is not initialized. Use within 'async with' context.")
+        return self._session
 
-    params = {
-        'limit': limit,
-        'offset': offset,
-    }
 
-    headers = {
-        'accept': 'application/json',
-        'Authorization': f'Bearer {api_token}'
-    }
+class ORDHTTPClient(HTTPClient):
+    # Тут получим статусы публикаций
+    async def __get_erir_statuses(self):
+        async with self.session.get("/v1/erir_statuses") as resp:
+            return await resp.json()
 
-    try:
-        response = requests.get(url, headers=headers, params=params)
-        response.raise_for_status()  # Вызывает исключение для кодов ошибок 4xx и 5xx
-        data = response.json()      # Декодируем JSON ответ
-        items = data.get("items")    # Получаем список items из ответа
+    # Тут получим список креативов
+    async def __get_creatives(self, limit=1000, offset=0):
+        async with self.session.get("/v1/creative",
+                                    params={
+                                        'limit': limit,
+                                        'offset': offset}
+                                    ) as resp:
+            result = await resp.json()
+            return result
 
-        if items and isinstance(items, list): # Проверяем, что items - это список и не пустой
-            creative_list = []
-            for item in items:
-                erid = item.get("erid")
-                external_id = item.get("external_id")
-                if erid and external_id: # Проверяем, что erid и external_id присутствуют в элементе
-                    creative_list.append({"erid": erid, "external_id": external_id})
-            return creative_list # Возвращаем список словарей
+    # Отсюда получим eid договора
+    async def __get_creative(self, eid: str):
+        async with self.session.get(f"/v2/creative/{eid}") as resp:
+            result = await resp.json()
+            return result
 
-        else:
-            print("Предупреждение: Ключ 'items' не найден или items не является списком.")
-            return None # Возвращаем None, если структура JSON не соответствует ожидаемой
+    # Отсюда получим eid контрагента
+    async def __get_contract(self, eid: str):
+        async with self.session.get(f"/v1/contract/{eid}") as resp:
+            result = await resp.json()
+            return result
 
-    except requests.exceptions.HTTPError as http_err:
-        print(f"Ошибка HTTP запроса: {http_err}")
-        print(f"Текст ответа: {response.text}")
-        return None
-    except requests.exceptions.RequestException as req_err:
-        print(f"Ошибка запроса: {req_err}")
-        return None
-    except json.JSONDecodeError as json_err:
-        print(f"Ошибка декодирования JSON: {json_err}")
-        print(f"Текст ответа: {response.text}")
-        return None
+    # Отсюда получим ФИО
+    async def __get_person(self, eid: str):
+        async with self.session.get(f"/v1/person/{eid}") as resp:
+            result = await resp.json()
+            return result
 
-def get_last_5_creative_statuses_string(api_token):
-    """
-    Возвращает строку с информацией о статусах ЕРИР для последних 5 креативов.
+    # Отсюда получим список рекламных площадок
+    async def __get_pads(self, limit=1000, offset=0):
+        async with self.session.get("/v1/pad",
+                                    params={
+                                        'limit': limit,
+                                        'offset': offset}
+                                    ) as resp:
+            result = await resp.json()
+            return result
 
-    Args:
-        api_token (str): Токен авторизации API Bearer.
+    # Отсюда получим данные рекламной площадки (eid контрагента и url)
+    async def __get_pad(self, eid: str):
+        async with self.session.get(f"/v1/pad/{eid}") as resp:
+            result = await resp.json()
+            return result
 
-    Returns:
-        str: Строка, содержащая информацию о последних 5 парах "токен + статус ЕРИР".
-             В случае ошибки или отсутствия данных возвращает информационное сообщение об ошибке.
-    """
-    creative_list = get_creative_list_data(api_token=api_token, limit=5)
-    if not creative_list:
-        return "Ошибка при получении списка креативов или список креативов пуст."
+    async def get_erid_statuses(self):
+        try:
+            result = await self.__get_erir_statuses()
+            items = result['items']
+            bad_or_processing = [
+                {'data_type': item['data_type'],
+                 'external_id': item['external_id'],
+                 'updated_by_user_ts': item['updated_by_user_ts'],
+                 'erir_status': item['erir_status']
+                 } for item in items if
+                item['erir_status'] == 'processing' or item['erir_status'] == 'bad']
 
-    result_string_lines = ["Последние 5 креативов и их статусы ЕРИР:\n"]
+            erir_statuses = ''
+            for item in bad_or_processing:
+                if not is_date_relevant(item['updated_by_user_ts']):
+                    continue
+                data_type = item['data_type']
+                if data_type == 'person':
+                    stat = await self.__get_person(item['external_id'])
+                    name = stat['name']
+                elif data_type == 'contract':
+                    stat = await self.__get_contract(item['external_id'])
+                    name = stat['comment']
+                elif data_type == 'creative':
+                    stat = await self.__get_creative(item['external_id'])
+                    name = stat['erid']
+                elif data_type == 'pad':
+                    stat = await self.__get_pad(item['external_id'])
+                    name = stat['name']
+                else:
+                    name = ''
 
-    for creative_item in creative_list:
-        external_id = creative_item['external_id']
-        erir_status = get_erir_statuses_data(api_token=api_token, external_ids=[external_id]) # Передаем external_id как список
+                if erir_statuses:
+                    erir_statuses = erir_statuses + '\n' + name + ' ' + item['erir_status']
+                else:
+                    erir_statuses = name + ' ' + item['erir_status']
 
-        if erir_status:
-            result_string_lines.append(f"Токен: {creative_item['erid']}, Статус ЕРИР: {erir_status}")
-        else:
-            result_string_lines.append(f"Токен: {creative_item['erid']}, Статус ЕРИР: Не удалось получить статус") # Сообщение, если статус не получен
-
-    return "\n".join(result_string_lines) # Соединяем строки в одну с переносом строк
+            return erir_statuses
+        except Exception as e:
+            return f"Ошибка: {e}"
